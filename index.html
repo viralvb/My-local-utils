@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Private Local Duplicate Finder</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; line-height: 1.5; }
+        #log { background: #f4f4f4; padding: 10px; border-radius: 5px; height: 300px; overflow-y: auto; white-space: pre-wrap; font-family: monospace; }
+        .match { color: #d9534f; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>Local Duplicate Finder</h1>
+    <p>Select a folder to scan. No files are uploaded; everything stays in your browser.</p>
+    <button id="scanBtn">Select Folder & Scan</button>
+    <div id="log">Logs will appear here...</div>
+
+    <script>
+        const logEl = document.getElementById('log');
+        const log = (msg, isMatch = false) => {
+            const div = document.createElement('div');
+            if (isMatch) div.className = 'match';
+            div.textContent = msg;
+            logEl.appendChild(div);
+            logEl.scrollTop = logEl.scrollHeight;
+        };
+
+        // Helper to hash specific file chunks
+        async function hashChunk(file, start, end) {
+            const slice = file.slice(start, end);
+            const buffer = await slice.arrayBuffer();
+            const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+            return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        document.getElementById('scanBtn').onclick = async () => {
+            try {
+                const dirHandle = await window.showDirectoryPicker();
+                log("Scanning directory structure...");
+                const filesBySize = new Map();
+
+                async function walk(handle, path = "") {
+                    for await (const entry of handle.values()) {
+                        const currentPath = `${path}/${entry.name}`;
+                        if (entry.kind === 'directory') {
+                            await walk(entry, currentPath);
+                        } else {
+                            const file = await entry.getFile();
+                            if (!filesBySize.has(file.size)) filesBySize.set(file.size, []);
+                            filesBySize.get(file.size).push({ file, path: currentPath });
+                        }
+                    }
+                }
+                await walk(dirHandle);
+
+                log("Phase 1 Complete: Grouping by size.");
+                for (const [size, group] of filesBySize) {
+                    if (group.length < 2) continue;
+
+                    log(`Checking ${group.length} files of size ${size} bytes...`);
+                    
+                    // Phase 2: Partial Hash (First 4KB)
+                    const headMap = new Map();
+                    for (const item of group) {
+                        const hHash = await hashChunk(item.file, 0, 4096);
+                        if (!headMap.has(hHash)) headMap.set(hHash, []);
+                        headMap.get(hHash).push(item);
+                    }
+
+                    // Phase 3: Full Hash for remaining candidates
+                    for (const [hHash, subGroup] of headMap) {
+                        if (subGroup.length < 2) continue;
+                        
+                        const finalGroups = new Map();
+                        for (const item of subGroup) {
+                            const fHash = await hashChunk(item.file, 0, item.file.size);
+                            if (!finalGroups.has(fHash)) finalGroups.set(fHash, []);
+                            finalGroups.get(fHash).push(item.path);
+                        }
+
+                        for (const [fHash, paths] of finalGroups) {
+                            if (paths.length > 1) {
+                                log(`DUPLICATES FOUND (${fHash.slice(0,8)}...):`, true);
+                                paths.forEach(p => log(` - ${p}`, true));
+                            }
+                        }
+                    }
+                }
+                log("Scan finished.");
+            } catch (e) { log("Error: " + e.message); }
+        };
+    </script>
+</body>
+</html>
