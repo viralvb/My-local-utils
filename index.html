@@ -121,17 +121,22 @@
                     if (abortController.signal.aborted) return;
                     for await (const entry of handle.values()) {
                         if (abortController.signal.aborted) return;
-                        if (entry.kind === 'directory') {
-                            const bucket = isRoot ? entry.name : topLevelName;
-                            if (isRoot) folderSizes.set(bucket, 0);
-                            await walkForSize(entry, false, bucket);
-                        } else {
-                            const file = await entry.getFile();
-                            if (topLevelName) folderSizes.set(topLevelName, (folderSizes.get(topLevelName) || 0) + file.size);
-                            else rootFilesSize += file.size;
-                        }
-                    }
-                }
+			try {
+                            if (entry.kind === 'directory') {
+                                const bucket = isRoot ? entry.name : topLevelName;
+                                if (isRoot) folderSizes.set(bucket, 0);
+                                await walkForSize(entry, false, bucket);
+                            } else {
+                                const file = await entry.getFile();
+                                if (topLevelName) folderSizes.set(topLevelName, (folderSizes.get(topLevelName) || 0) + file.size);
+                                else rootFilesSize += file.size;
+                            }
+                        } catch (err) {
+			      console.warn(`Skipping unreadable item: ${entry.name}`, err);
+			      continue;	
+                	}
+		      }
+		}
 
                 await walkForSize(dirHandle, true);
                 if (abortController.signal.aborted) throw new Error("Aborted");
@@ -164,15 +169,21 @@
                     for await (const entry of handle.values()) {
                         if (abortController.signal.aborted) return;
                         const fullPath = `${path}/${entry.name}`;
-                        if (entry.kind === 'directory') await walk(entry, fullPath);
-                        else {
-                            const file = await entry.getFile();
-                            if (!filesBySize.has(file.size)) filesBySize.set(file.size, []);
-                            filesBySize.get(file.size).push({ file, path: fullPath });
-                            counterEl.textContent = `Scanned ${++count} files...`;
-                        }
-                    }
-                }
+                        try { 
+                            if (entry.kind === 'directory') { 
+				await walk(entry, fullPath);
+                            } else {
+                            	const file = await entry.getFile();
+                            	if (!filesBySize.has(file.size)) filesBySize.set(file.size, []);
+                            	filesBySize.get(file.size).push({ file, path: fullPath });
+                            	counterEl.textContent = `Scanned ${++count} files...`;
+                        	}
+                    	} catch (fileErr) {
+				console.warn(`Skipping unreadble file: ${fullPath}`, fileErr);
+				continue;
+                	}
+		      }
+		}
                 await walk(dirHandle);
 
                 statusEl.textContent = "Analyzing duplicates...";
