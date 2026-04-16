@@ -1,47 +1,82 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Private Duplicate Finder</title>
+    <title>Private Local Disk Tools</title>
     <style>
-        body { font-family: -apple-system, system-ui, sans-serif; max-width: 800px; margin: 20px auto; padding: 20px; background: #f8f9fa; }
+        body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 20px auto; padding: 20px; background: #f8f9fa; color: #333; }
+        .card { background: #fff; border: 1px solid #ddd; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
         .controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
-        button { padding: 10px 20px; cursor: pointer; border-radius: 4px; border: 1px solid #ccc; background: white; }
+        button { padding: 10px 20px; cursor: pointer; border-radius: 4px; border: 1px solid #ccc; background: white; font-weight: 600; transition: 0.2s; }
+        button:hover { background: #f0f0f0; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
         #scanBtn { background: #007bff; color: white; border: none; }
+        #scanBtn:hover { background: #0056b3; }
+        #sizeBtn { background: #6f42c1; color: white; border: none; }
+        #sizeBtn:hover { background: #59359a; }
         #stopBtn { background: #dc3545; color: white; border: none; display: none; }
         #exportBtn { background: #28a745; color: white; border: none; display: none; }
-        #log { background: #fff; border: 1px solid #ddd; padding: 15px; height: 400px; overflow-y: auto; white-space: pre-wrap; font-family: monospace; font-size: 13px; }
-        .match { color: #d9534f; background: #fff5f5; padding: 2px; border-bottom: 1px solid #eee; }
-        .status { margin-top: 10px; font-weight: bold; color: #555; }
+        #log { background: #1e1e1e; color: #dcdcdc; border-radius: 4px; padding: 15px; height: 350px; overflow-y: auto; white-space: pre-wrap; font-family: 'Consolas', 'Monaco', monospace; font-size: 13px; }
+        .match { color: #ff8c8c; font-weight: bold; background: rgba(255,0,0,0.1); display: block; padding: 2px 0; }
+        .status-bar { margin-bottom: 10px; font-weight: bold; color: #555; display: flex; justify-content: space-between; }
+        #folderReport { display: none; border-left: 5px solid #6f42c1; }
+        .folder-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #eee; }
+        .folder-name { flex-grow: 1; overflow: hidden; text-overflow: ellipsis; }
+        .folder-size { font-weight: bold; color: #6f42c1; min-width: 100px; text-align: right; }
     </style>
 </head>
 <body>
-    <h2>📁 Local Duplicate Finder</h2>
-    <p>Find duplicates locally. <strong>No data is ever uploaded.</strong></p>
+    <h2>🛠️ Private Local Disk Utilities</h2>
+    <p>Run disk tools directly in your browser. <strong>Your files never leave your computer.</strong></p>
     
     <div class="controls">
-        <button id="scanBtn">Select Folder & Scan</button>
-        <button id="stopBtn">Stop Scan</button>
-        <button id="exportBtn">Download CSV Results</button>
+        <button id="sizeBtn">📊 Check Sub-Folder Sizes</button>
+        <button id="scanBtn">🔍 Find Duplicate Files</button>
+        <button id="stopBtn">🛑 Stop Current Task</button>
+        <button id="exportBtn">📥 Download CSV Results</button>
     </div>
 
-    <div id="status" class="status">Ready</div>
+    <div class="status-bar">
+        <span id="status">Ready</span>
+        <span id="counter"></span>
+    </div>
+
+    <!-- Folder Size Report Area -->
+    <div id="folderReport" class="card">
+        <strong>Immediate Sub-directory Sizes (Depth 1):</strong>
+        <div id="reportList" style="margin-top:15px;"></div>
+    </div>
+
+    <!-- Log Area -->
     <div id="log">Logs will appear here...</div>
 
     <script>
         let abortController = null;
-        let resultsData = []; // To store matches for CSV
-        
+        let resultsData = []; 
+
         const logEl = document.getElementById('log');
         const statusEl = document.getElementById('status');
+        const counterEl = document.getElementById('counter');
         const stopBtn = document.getElementById('stopBtn');
         const scanBtn = document.getElementById('scanBtn');
+        const sizeBtn = document.getElementById('sizeBtn');
         const exportBtn = document.getElementById('exportBtn');
+        const reportContainer = document.getElementById('folderReport');
+        const reportList = document.getElementById('reportList');
+
+        // Formatting Helper
+        function formatSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
 
         const log = (msg, isMatch = false) => {
-            const div = document.createElement('div');
-            if (isMatch) div.className = 'match';
-            div.textContent = msg;
-            logEl.appendChild(div);
+            const span = document.createElement('span');
+            if (isMatch) span.className = 'match';
+            span.textContent = msg + "\n";
+            logEl.appendChild(span);
             logEl.scrollTop = logEl.scrollHeight;
         };
 
@@ -52,119 +87,134 @@
             return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
         }
 
-        // --- CSV EXPORT LOGIC ---
-        exportBtn.onclick = () => {
-            if (resultsData.length === 0) return;
-            
-            // Header for the CSV
-            let csvContent = "Hash,File Path\n";
-            
-            resultsData.forEach(item => {
-                // Escape quotes in file paths for valid CSV format
-                const safePath = `"${item.path.replace(/"/g, '""')}"`;
-                csvContent += `${item.hash},${safePath}\n`;
-            });
+        function resetUI() {
+            logEl.textContent = "";
+            counterEl.textContent = "";
+            resultsData = [];
+            exportBtn.style.display = 'none';
+            reportContainer.style.display = 'none';
+            scanBtn.disabled = true;
+            sizeBtn.disabled = true;
+            stopBtn.style.display = 'inline-block';
+        }
 
-            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement("a");
-            link.setAttribute("href", url);
-            link.setAttribute("download", `duplicates_${new Date().getTime()}.csv`);
-            link.style.visibility = 'hidden';
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        };
-
-        stopBtn.onclick = () => {
-            if (abortController) abortController.abort();
+        function restoreUI() {
+            scanBtn.disabled = false;
+            sizeBtn.disabled = false;
             stopBtn.style.display = 'none';
-            scanBtn.style.display = 'inline-block';
+        }
+
+        stopBtn.onclick = () => { if (abortController) abortController.abort(); };
+
+        // --- UTILITY 1: FOLDER SIZES ---
+        sizeBtn.onclick = async () => {
+            try {
+                const dirHandle = await window.showDirectoryPicker();
+                abortController = new AbortController();
+                resetUI();
+                statusEl.textContent = "Calculating sizes...";
+
+                const folderSizes = new Map();
+                let rootFilesSize = 0;
+
+                async function walkForSize(handle, isRoot = false, topLevelName = "") {
+                    if (abortController.signal.aborted) return;
+                    for await (const entry of handle.values()) {
+                        if (abortController.signal.aborted) return;
+                        if (entry.kind === 'directory') {
+                            const bucket = isRoot ? entry.name : topLevelName;
+                            if (isRoot) folderSizes.set(bucket, 0);
+                            await walkForSize(entry, false, bucket);
+                        } else {
+                            const file = await entry.getFile();
+                            if (topLevelName) folderSizes.set(topLevelName, (folderSizes.get(topLevelName) || 0) + file.size);
+                            else rootFilesSize += file.size;
+                        }
+                    }
+                }
+
+                await walkForSize(dirHandle, true);
+                if (abortController.signal.aborted) throw new Error("Aborted");
+
+                reportList.innerHTML = "";
+                reportContainer.style.display = "block";
+                [...folderSizes.entries()].sort((a, b) => b[1] - a[1]).forEach(([name, size]) => {
+                    const row = document.createElement('div');
+                    row.className = 'folder-item';
+                    row.innerHTML = `<span class="folder-name">${name}</span> <span class="folder-size">${formatSize(size)}</span>`;
+                    reportList.appendChild(row);
+                });
+                statusEl.textContent = "Size scan finished.";
+            } catch (e) { statusEl.textContent = e.message === "Aborted" ? "Scan stopped." : "Error: " + e.message; }
+            finally { restoreUI(); }
         };
 
+        // --- UTILITY 2: DUPLICATES ---
         scanBtn.onclick = async () => {
             try {
                 const dirHandle = await window.showDirectoryPicker();
                 abortController = new AbortController();
-                const signal = abortController.signal;
-
-                logEl.textContent = ""; 
-                resultsData = []; // Reset data
-                exportBtn.style.display = 'none';
-                scanBtn.style.display = 'none';
-                stopBtn.style.display = 'inline-block';
-                statusEl.textContent = "Walking directory...";
-
+                resetUI();
+                statusEl.textContent = "Mapping directory...";
                 const filesBySize = new Map();
-                let fileCount = 0;
+                let count = 0;
 
                 async function walk(handle, path = "") {
-                    if (signal.aborted) return;
+                    if (abortController.signal.aborted) return;
                     for await (const entry of handle.values()) {
-                        if (signal.aborted) return;
-                        const currentPath = `${path}/${entry.name}`;
-                        if (entry.kind === 'directory') {
-                            await walk(entry, currentPath);
-                        } else {
+                        if (abortController.signal.aborted) return;
+                        const fullPath = `${path}/${entry.name}`;
+                        if (entry.kind === 'directory') await walk(entry, fullPath);
+                        else {
                             const file = await entry.getFile();
                             if (!filesBySize.has(file.size)) filesBySize.set(file.size, []);
-                            filesBySize.get(file.size).push({ file, path: currentPath });
-                            fileCount++;
-                            statusEl.textContent = `Found ${fileCount} files...`;
+                            filesBySize.get(file.size).push({ file, path: fullPath });
+                            counterEl.textContent = `Scanned ${++count} files...`;
                         }
                     }
                 }
                 await walk(dirHandle);
 
-                if (signal.aborted) return;
-
-                statusEl.textContent = "Analyzing potential duplicates...";
+                statusEl.textContent = "Analyzing duplicates...";
                 for (const [size, group] of filesBySize) {
-                    if (signal.aborted) break;
+                    if (abortController.signal.aborted) break;
                     if (group.length < 2) continue;
-
                     const headMap = new Map();
                     for (const item of group) {
-                        if (signal.aborted) break;
-                        const hHash = await hashChunk(item.file, 0, 4096);
-                        if (!headMap.has(hHash)) headMap.set(hHash, []);
-                        headMap.get(hHash).push(item);
+                        const h = await hashChunk(item.file, 0, 4096);
+                        if (!headMap.has(h)) headMap.set(h, []);
+                        headMap.get(h).push(item);
                     }
-
-                    for (const [hHash, subGroup] of headMap) {
-                        if (subGroup.length < 2) continue;
-                        
-                        const finalGroups = new Map();
-                        for (const item of subGroup) {
-                            if (signal.aborted) break;
+                    for (const [h, sub] of headMap) {
+                        if (sub.length < 2) continue;
+                        const final = new Map();
+                        for (const item of sub) {
                             const fHash = await hashChunk(item.file, 0, item.file.size);
-                            if (!finalGroups.has(fHash)) finalGroups.set(fHash, []);
-                            finalGroups.get(fHash).push({path: item.path, hash: fHash});
+                            if (!final.has(fHash)) final.set(fHash, []);
+                            final.get(fHash).push({path: item.path, hash: fHash});
                         }
-
-                        for (const [fHash, items] of finalGroups) {
+                        for (const [fHash, items] of final) {
                             if (items.length > 1) {
-                                log(`MATCH [${fHash.slice(0,8)}] (${items.length} copies found):`, true);
-                                items.forEach(item => {
-                                    log(` -> ${item.path}`, true);
-                                    resultsData.push(item); // Add to CSV export list
-                                });
+                                log(`MATCH [${fHash.slice(0,8)}] (${items.length} copies):`, true);
+                                items.forEach(i => { log(` -> ${i.path}`); resultsData.push(i); });
                             }
                         }
                     }
                 }
-                
-                statusEl.textContent = signal.aborted ? "Scan Aborted." : "Scan Finished.";
-                stopBtn.style.display = 'none';
-                scanBtn.style.display = 'inline-block';
+                statusEl.textContent = abortController.signal.aborted ? "Scan stopped." : "Duplicate scan finished.";
                 if (resultsData.length > 0) exportBtn.style.display = 'inline-block';
+            } catch (e) { statusEl.textContent = "Error: " + e.message; }
+            finally { restoreUI(); }
+        };
 
-            } catch (e) {
-                if (e.name !== 'AbortError') log("Error: " + e.message);
-                statusEl.textContent = "Process stopped.";
-                stopBtn.style.display = 'none';
-                scanBtn.style.display = 'inline-block';
-            }
+        exportBtn.onclick = () => {
+            let csv = "Hash,File Path\n";
+            resultsData.forEach(i => csv += `${i.hash},"${i.path.replace(/"/g, '""')}"\n`);
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = `duplicates_${Date.now()}.csv`;
+            a.click();
         };
     </script>
 </body>
