@@ -1,21 +1,42 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Private Local Duplicate Finder</title>
+    <title>Private Duplicate Finder</title>
     <style>
-        body { font-family: sans-serif; padding: 20px; line-height: 1.5; }
-        #log { background: #f4f4f4; padding: 10px; border-radius: 5px; height: 300px; overflow-y: auto; white-space: pre-wrap; font-family: monospace; }
-        .match { color: #d9534f; font-weight: bold; }
+        body { font-family: -apple-system, system-ui, sans-serif; max-width: 800px; margin: 20px auto; padding: 20px; background: #f8f9fa; }
+        .controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+        button { padding: 10px 20px; cursor: pointer; border-radius: 4px; border: 1px solid #ccc; background: white; }
+        #scanBtn { background: #007bff; color: white; border: none; }
+        #stopBtn { background: #dc3545; color: white; border: none; display: none; }
+        #exportBtn { background: #28a745; color: white; border: none; display: none; }
+        #log { background: #fff; border: 1px solid #ddd; padding: 15px; height: 400px; overflow-y: auto; white-space: pre-wrap; font-family: monospace; font-size: 13px; }
+        .match { color: #d9534f; background: #fff5f5; padding: 2px; border-bottom: 1px solid #eee; }
+        .status { margin-top: 10px; font-weight: bold; color: #555; }
     </style>
 </head>
 <body>
-    <h1>Local Duplicate Finder</h1>
-    <p>Select a folder to scan. No files are uploaded; everything stays in your browser.</p>
-    <button id="scanBtn">Select Folder & Scan</button>
+    <h2>📁 Local Duplicate Finder</h2>
+    <p>Find duplicates locally. <strong>No data is ever uploaded.</strong></p>
+    
+    <div class="controls">
+        <button id="scanBtn">Select Folder & Scan</button>
+        <button id="stopBtn">Stop Scan</button>
+        <button id="exportBtn">Download CSV Results</button>
+    </div>
+
+    <div id="status" class="status">Ready</div>
     <div id="log">Logs will appear here...</div>
 
     <script>
+        let abortController = null;
+        let resultsData = []; // To store matches for CSV
+        
         const logEl = document.getElementById('log');
+        const statusEl = document.getElementById('status');
+        const stopBtn = document.getElementById('stopBtn');
+        const scanBtn = document.getElementById('scanBtn');
+        const exportBtn = document.getElementById('exportBtn');
+
         const log = (msg, isMatch = false) => {
             const div = document.createElement('div');
             if (isMatch) div.className = 'match';
@@ -24,7 +45,6 @@
             logEl.scrollTop = logEl.scrollHeight;
         };
 
-        // Helper to hash specific file chunks
         async function hashChunk(file, start, end) {
             const slice = file.slice(start, end);
             const buffer = await slice.arrayBuffer();
@@ -32,14 +52,56 @@
             return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
         }
 
-        document.getElementById('scanBtn').onclick = async () => {
+        // --- CSV EXPORT LOGIC ---
+        exportBtn.onclick = () => {
+            if (resultsData.length === 0) return;
+            
+            // Header for the CSV
+            let csvContent = "Hash,File Path\n";
+            
+            resultsData.forEach(item => {
+                // Escape quotes in file paths for valid CSV format
+                const safePath = `"${item.path.replace(/"/g, '""')}"`;
+                csvContent += `${item.hash},${safePath}\n`;
+            });
+
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.setAttribute("href", url);
+            link.setAttribute("download", `duplicates_${new Date().getTime()}.csv`);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        };
+
+        stopBtn.onclick = () => {
+            if (abortController) abortController.abort();
+            stopBtn.style.display = 'none';
+            scanBtn.style.display = 'inline-block';
+        };
+
+        scanBtn.onclick = async () => {
             try {
                 const dirHandle = await window.showDirectoryPicker();
-                log("Scanning directory structure...");
+                abortController = new AbortController();
+                const signal = abortController.signal;
+
+                logEl.textContent = ""; 
+                resultsData = []; // Reset data
+                exportBtn.style.display = 'none';
+                scanBtn.style.display = 'none';
+                stopBtn.style.display = 'inline-block';
+                statusEl.textContent = "Walking directory...";
+
                 const filesBySize = new Map();
+                let fileCount = 0;
 
                 async function walk(handle, path = "") {
+                    if (signal.aborted) return;
                     for await (const entry of handle.values()) {
+                        if (signal.aborted) return;
                         const currentPath = `${path}/${entry.name}`;
                         if (entry.kind === 'directory') {
                             await walk(entry, currentPath);
@@ -47,46 +109,62 @@
                             const file = await entry.getFile();
                             if (!filesBySize.has(file.size)) filesBySize.set(file.size, []);
                             filesBySize.get(file.size).push({ file, path: currentPath });
+                            fileCount++;
+                            statusEl.textContent = `Found ${fileCount} files...`;
                         }
                     }
                 }
                 await walk(dirHandle);
 
-                log("Phase 1 Complete: Grouping by size.");
+                if (signal.aborted) return;
+
+                statusEl.textContent = "Analyzing potential duplicates...";
                 for (const [size, group] of filesBySize) {
+                    if (signal.aborted) break;
                     if (group.length < 2) continue;
 
-                    log(`Checking ${group.length} files of size ${size} bytes...`);
-                    
-                    // Phase 2: Partial Hash (First 4KB)
                     const headMap = new Map();
                     for (const item of group) {
+                        if (signal.aborted) break;
                         const hHash = await hashChunk(item.file, 0, 4096);
                         if (!headMap.has(hHash)) headMap.set(hHash, []);
                         headMap.get(hHash).push(item);
                     }
 
-                    // Phase 3: Full Hash for remaining candidates
                     for (const [hHash, subGroup] of headMap) {
                         if (subGroup.length < 2) continue;
                         
                         const finalGroups = new Map();
                         for (const item of subGroup) {
+                            if (signal.aborted) break;
                             const fHash = await hashChunk(item.file, 0, item.file.size);
                             if (!finalGroups.has(fHash)) finalGroups.set(fHash, []);
-                            finalGroups.get(fHash).push(item.path);
+                            finalGroups.get(fHash).push({path: item.path, hash: fHash});
                         }
 
-                        for (const [fHash, paths] of finalGroups) {
-                            if (paths.length > 1) {
-                                log(`DUPLICATES FOUND (${fHash.slice(0,8)}...):`, true);
-                                paths.forEach(p => log(` - ${p}`, true));
+                        for (const [fHash, items] of finalGroups) {
+                            if (items.length > 1) {
+                                log(`MATCH [${fHash.slice(0,8)}]:`, true);
+                                items.forEach(item => {
+                                    log(` -> ${item.path}`, true);
+                                    resultsData.push(item); // Add to CSV export list
+                                });
                             }
                         }
                     }
                 }
-                log("Scan finished.");
-            } catch (e) { log("Error: " + e.message); }
+                
+                statusEl.textContent = signal.aborted ? "Scan Aborted." : "Scan Finished.";
+                stopBtn.style.display = 'none';
+                scanBtn.style.display = 'inline-block';
+                if (resultsData.length > 0) exportBtn.style.display = 'inline-block';
+
+            } catch (e) {
+                if (e.name !== 'AbortError') log("Error: " + e.message);
+                statusEl.textContent = "Process stopped.";
+                stopBtn.style.display = 'none';
+                scanBtn.style.display = 'inline-block';
+            }
         };
     </script>
 </body>
