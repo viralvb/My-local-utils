@@ -1,38 +1,38 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Private Local Disk Tools</title>
+    <meta charset="UTF-8">
+    <title>Private Disk Utilities</title>
     <style>
-        body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 20px auto; padding: 20px; background: #f8f9fa; color: #333; }
+        body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 20px auto; padding: 20px; background: #f8f9fa; color: #333; line-height: 1.5; }
         .card { background: #fff; border: 1px solid #ddd; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
         .controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
         button { padding: 10px 20px; cursor: pointer; border-radius: 4px; border: 1px solid #ccc; background: white; font-weight: 600; transition: 0.2s; }
         button:hover { background: #f0f0f0; }
         button:disabled { opacity: 0.5; cursor: not-allowed; }
-        #scanBtn { background: #007bff; color: white; border: none; }
-        #scanBtn:hover { background: #0056b3; }
         #sizeBtn { background: #6f42c1; color: white; border: none; }
-        #sizeBtn:hover { background: #59359a; }
+        #scanBtn { background: #007bff; color: white; border: none; }
         #stopBtn { background: #dc3545; color: white; border: none; display: none; }
-        #exportBtn { background: #28a745; color: white; border: none; display: none; }
-        #log { background: #1e1e1e; color: #dcdcdc; border-radius: 4px; padding: 15px; height: 350px; overflow-y: auto; white-space: pre-wrap; font-family: 'Consolas', 'Monaco', monospace; font-size: 13px; }
+        .export-btn { background: #28a745; color: white; border: none; display: none; }
+        #log { background: #1e1e1e; color: #dcdcdc; border-radius: 4px; padding: 15px; height: 350px; overflow-y: auto; white-space: pre-wrap; font-family: 'Consolas', monospace; font-size: 13px; }
         .match { color: #ff8c8c; font-weight: bold; background: rgba(255,0,0,0.1); display: block; padding: 2px 0; }
+        .warning { color: #ffca28; font-style: italic; display: block; }
         .status-bar { margin-bottom: 10px; font-weight: bold; color: #555; display: flex; justify-content: space-between; }
         #folderReport { display: none; border-left: 5px solid #6f42c1; }
         .folder-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #eee; }
-        .folder-name { flex-grow: 1; overflow: hidden; text-overflow: ellipsis; }
         .folder-size { font-weight: bold; color: #6f42c1; min-width: 100px; text-align: right; }
     </style>
 </head>
 <body>
     <h2>🛠️ Private Local Disk Utilities</h2>
-    <p>Run disk tools directly in your browser. <strong>Your files never leave your computer.</strong></p>
+    <p>Browser-based tools for your local file system. <strong>Privacy Guaranteed:</strong> Your data never leaves this tab.</p>
     
     <div class="controls">
-        <button id="sizeBtn">📊 Check Sub-Folder Sizes</button>
-        <button id="scanBtn">🔍 Find Duplicate Files</button>
-        <button id="stopBtn">🛑 Stop Current Task</button>
-        <button id="exportBtn">📥 Download CSV Results</button>
+        <button id="sizeBtn">📊 Check Folder Sizes</button>
+        <button id="scanBtn">🔍 Find Duplicates</button>
+        <button id="stopBtn">🛑 Stop</button>
+        <button id="exportSizesBtn" class="export-btn">📥 Download Size CSV</button>
+        <button id="exportDupesBtn" class="export-btn">📥 Download Duplicate CSV</button>
     </div>
 
     <div class="status-bar">
@@ -40,18 +40,18 @@
         <span id="counter"></span>
     </div>
 
-    <!-- Folder Size Report Area -->
     <div id="folderReport" class="card">
-        <strong>Immediate Sub-directory Sizes (Depth 1):</strong>
+        <strong>Sub-directory Sizes (Depth 1):</strong>
         <div id="reportList" style="margin-top:15px;"></div>
     </div>
 
-    <!-- Log Area -->
     <div id="log">Logs will appear here...</div>
 
     <script>
         let abortController = null;
-        let resultsData = []; 
+        let dupeResults = [];
+        let sizeResults = [];
+        let skippedCount = 0;
 
         const logEl = document.getElementById('log');
         const statusEl = document.getElementById('status');
@@ -59,22 +59,22 @@
         const stopBtn = document.getElementById('stopBtn');
         const scanBtn = document.getElementById('scanBtn');
         const sizeBtn = document.getElementById('sizeBtn');
-        const exportBtn = document.getElementById('exportBtn');
+        const exportSizesBtn = document.getElementById('exportSizesBtn');
+        const exportDupesBtn = document.getElementById('exportDupesBtn');
         const reportContainer = document.getElementById('folderReport');
         const reportList = document.getElementById('reportList');
 
-        // Formatting Helper
         function formatSize(bytes) {
             if (bytes === 0) return '0 Bytes';
-            const k = 1024;
-            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const k = 1024, sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
             const i = Math.floor(Math.log(bytes) / Math.log(k));
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
 
-        const log = (msg, isMatch = false) => {
+        const log = (msg, type = '') => {
             const span = document.createElement('span');
-            if (isMatch) span.className = 'match';
+            if (type === 'match') span.className = 'match';
+            if (type === 'warning') span.className = 'warning';
             span.textContent = msg + "\n";
             logEl.appendChild(span);
             logEl.scrollTop = logEl.scrollHeight;
@@ -87,145 +87,138 @@
             return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
         }
 
-        function resetUI() {
-            logEl.textContent = "";
-            counterEl.textContent = "";
-            resultsData = [];
-            exportBtn.style.display = 'none';
+        function prepareTask() {
+            logEl.textContent = ""; counterEl.textContent = ""; skippedCount = 0;
+            dupeResults = []; sizeResults = [];
+            exportSizesBtn.style.display = 'none'; exportDupesBtn.style.display = 'none';
             reportContainer.style.display = 'none';
-            scanBtn.disabled = true;
-            sizeBtn.disabled = true;
+            scanBtn.disabled = sizeBtn.disabled = true;
             stopBtn.style.display = 'inline-block';
+            abortController = new AbortController();
         }
 
-        function restoreUI() {
-            scanBtn.disabled = false;
-            sizeBtn.disabled = false;
+        function endTask(msg) {
+            statusEl.textContent = abortController.signal.aborted ? "Task Stopped." : msg;
+            if (skippedCount > 0) statusEl.textContent += ` (${skippedCount} files skipped)`;
+            scanBtn.disabled = sizeBtn.disabled = false;
             stopBtn.style.display = 'none';
         }
 
-        stopBtn.onclick = () => { if (abortController) abortController.abort(); };
+        stopBtn.onclick = () => abortController.abort();
 
-        // --- UTILITY 1: FOLDER SIZES ---
+        // --- UTILITY: SIZES ---
         sizeBtn.onclick = async () => {
             try {
                 const dirHandle = await window.showDirectoryPicker();
-                abortController = new AbortController();
-                resetUI();
-                statusEl.textContent = "Calculating sizes...";
-
+                prepareTask();
+                statusEl.textContent = "Calculating...";
                 const folderSizes = new Map();
-                let rootFilesSize = 0;
+                let rootSize = 0;
 
-                async function walkForSize(handle, isRoot = false, topLevelName = "") {
+                async function walk(handle, isRoot = false, topLevel = "") {
                     if (abortController.signal.aborted) return;
                     for await (const entry of handle.values()) {
-                        if (abortController.signal.aborted) return;
-			try {
+                        try {
                             if (entry.kind === 'directory') {
-                                const bucket = isRoot ? entry.name : topLevelName;
+                                const bucket = isRoot ? entry.name : topLevel;
                                 if (isRoot) folderSizes.set(bucket, 0);
-                                await walkForSize(entry, false, bucket);
+                                await walk(entry, false, bucket);
                             } else {
                                 const file = await entry.getFile();
-                                if (topLevelName) folderSizes.set(topLevelName, (folderSizes.get(topLevelName) || 0) + file.size);
-                                else rootFilesSize += file.size;
+                                if (topLevel) folderSizes.set(topLevel, folderSizes.get(topLevel) + file.size);
+                                else rootSize += file.size;
                             }
-                        } catch (err) {
-			      console.warn(`Skipping unreadable item: ${entry.name}`, err);
-			      continue;	
-                	}
-		      }
-		}
-
-                await walkForSize(dirHandle, true);
-                if (abortController.signal.aborted) throw new Error("Aborted");
-
+                        } catch (e) { skippedCount++; log(`⚠️ SKIP: "${entry.name}" (${e.name})`, 'warning'); }
+                    }
+                }
+                await walk(dirHandle, true);
+                
+                sizeResults = [...folderSizes.entries()].sort((a,b) => b[1] - a[1]);
                 reportList.innerHTML = "";
-                reportContainer.style.display = "block";
-                [...folderSizes.entries()].sort((a, b) => b[1] - a[1]).forEach(([name, size]) => {
-                    const row = document.createElement('div');
-                    row.className = 'folder-item';
-                    row.innerHTML = `<span class="folder-name">${name}</span> <span class="folder-size">${formatSize(size)}</span>`;
+                sizeResults.forEach(([n, s]) => {
+                    const row = document.createElement('div'); row.className = 'folder-item';
+                    row.innerHTML = `<span>${n}</span><span class="folder-size">${formatSize(s)}</span>`;
                     reportList.appendChild(row);
                 });
-                statusEl.textContent = "Size scan finished.";
-            } catch (e) { statusEl.textContent = e.message === "Aborted" ? "Scan stopped." : "Error: " + e.message; }
-            finally { restoreUI(); }
+                reportContainer.style.display = "block";
+                if (sizeResults.length > 0) exportSizesBtn.style.display = 'inline-block';
+                endTask("Size scan complete.");
+            } catch (e) { endTask("Error: " + e.message); }
         };
 
-        // --- UTILITY 2: DUPLICATES ---
+        // --- UTILITY: DUPLICATES ---
         scanBtn.onclick = async () => {
             try {
                 const dirHandle = await window.showDirectoryPicker();
-                abortController = new AbortController();
-                resetUI();
-                statusEl.textContent = "Mapping directory...";
+                prepareTask();
+                statusEl.textContent = "Mapping...";
                 const filesBySize = new Map();
-                let count = 0;
+                let fCount = 0;
 
                 async function walk(handle, path = "") {
-                    if (abortController.signal.aborted) return;
                     for await (const entry of handle.values()) {
                         if (abortController.signal.aborted) return;
-                        const fullPath = `${path}/${entry.name}`;
-                        try { 
-                            if (entry.kind === 'directory') { 
-				await walk(entry, fullPath);
-                            } else {
-                            	const file = await entry.getFile();
-                            	if (!filesBySize.has(file.size)) filesBySize.set(file.size, []);
-                            	filesBySize.get(file.size).push({ file, path: fullPath });
-                            	counterEl.textContent = `Scanned ${++count} files...`;
-                        	}
-                    	} catch (fileErr) {
-				console.warn(`Skipping unreadble file: ${fullPath}`, fileErr);
-				continue;
-                	}
-		      }
-		}
+                        const full = `${path}/${entry.name}`;
+                        try {
+                            if (entry.kind === 'directory') await walk(entry, full);
+                            else {
+                                const f = await entry.getFile();
+                                if (!filesBySize.has(f.size)) filesBySize.set(f.size, []);
+                                filesBySize.get(f.size).push({ file: f, path: full });
+                                counterEl.textContent = `Found ${++fCount} files...`;
+                            }
+                        } catch (e) { skippedCount++; log(`⚠️ SKIP: "${entry.name}"`, 'warning'); }
+                    }
+                }
                 await walk(dirHandle);
 
-                statusEl.textContent = "Analyzing duplicates...";
+                statusEl.textContent = "Hashing...";
                 for (const [size, group] of filesBySize) {
                     if (abortController.signal.aborted) break;
                     if (group.length < 2) continue;
-                    const headMap = new Map();
+                    const heads = new Map();
                     for (const item of group) {
                         const h = await hashChunk(item.file, 0, 4096);
-                        if (!headMap.has(h)) headMap.set(h, []);
-                        headMap.get(h).push(item);
+                        if (!heads.has(h)) heads.set(h, []);
+                        heads.get(h).push(item);
                     }
-                    for (const [h, sub] of headMap) {
+                    for (const [h, sub] of heads) {
                         if (sub.length < 2) continue;
-                        const final = new Map();
+                        const finals = new Map();
                         for (const item of sub) {
-                            const fHash = await hashChunk(item.file, 0, item.file.size);
-                            if (!final.has(fHash)) final.set(fHash, []);
-                            final.get(fHash).push({path: item.path, hash: fHash});
+                            const fH = await hashChunk(item.file, 0, item.file.size);
+                            if (!finals.has(fH)) finals.set(fH, []);
+                            finals.get(fH).push({path: item.path, hash: fH});
                         }
-                        for (const [fHash, items] of final) {
+                        for (const [fH, items] of finals) {
                             if (items.length > 1) {
-                                log(`MATCH [${fHash.slice(0,8)}] (${items.length} copies):`, true);
-                                items.forEach(i => { log(` -> ${i.path}`); resultsData.push(i); });
+                                log(`MATCH [${fH.slice(0,8)}] (${items.length} copies):`, 'match');
+                                items.forEach(i => { log(` -> ${i.path}`); dupeResults.push(i); });
                             }
                         }
                     }
                 }
-                statusEl.textContent = abortController.signal.aborted ? "Scan stopped." : "Duplicate scan finished.";
-                if (resultsData.length > 0) exportBtn.style.display = 'inline-block';
-            } catch (e) { statusEl.textContent = "Error: " + e.message; }
-            finally { restoreUI(); }
+                if (dupeResults.length > 0) exportDupesBtn.style.display = 'inline-block';
+                endTask("Duplicate scan complete.");
+            } catch (e) { endTask("Error: " + e.message); }
         };
 
-        exportBtn.onclick = () => {
+        function downloadCSV(name, data) {
+            const blob = new Blob([data], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a"); a.href = url; a.download = `${name}_${Date.now()}.csv`; a.click();
+        }
+
+        exportSizesBtn.onclick = () => {
+            let csv = "Folder Name,Size (Bytes)\n";
+            sizeResults.forEach(([n, s]) => csv += `"${n}",${s}\n`);
+            downloadCSV("folder_sizes", csv);
+        };
+
+        exportDupesBtn.onclick = () => {
             let csv = "Hash,File Path\n";
-            resultsData.forEach(i => csv += `${i.hash},"${i.path.replace(/"/g, '""')}"\n`);
-            const blob = new Blob([csv], { type: 'text/csv' });
-            const a = document.createElement("a");
-            a.href = URL.createObjectURL(blob);
-            a.download = `duplicates_${Date.now()}.csv`;
-            a.click();
+            dupeResults.forEach(i => csv += `${i.hash},"${i.path.replace(/"/g, '""')}"\n`);
+            downloadCSV("duplicates", csv);
         };
     </script>
 </body>
