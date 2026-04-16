@@ -144,7 +144,7 @@
 
                         for (const [fHash, items] of finalGroups) {
                             if (items.length > 1) {
-                                log(`MATCH [${fHash.slice(0,8)}]:`, true);
+                                log(`MATCH [${fHash.slice(0,8)}] (${items.length} copies found):`, true);
                                 items.forEach(item => {
                                     log(` -> ${item.path}`, true);
                                     resultsData.push(item); // Add to CSV export list
